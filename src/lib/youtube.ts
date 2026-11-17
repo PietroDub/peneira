@@ -112,6 +112,13 @@ type Continuation = {
   mode: ChatMode;
 };
 
+const INITIAL_DATA_MARKERS = [
+  "ytInitialData = ",
+  "ytInitialData=",
+  'window["ytInitialData"] = ',
+  "window['ytInitialData'] = ",
+];
+
 export function extractSetup(html: string): {
   apiKey: string;
   clientVersion: string;
@@ -122,20 +129,17 @@ export function extractSetup(html: string): {
   const clientVersion =
     html.match(/"INNERTUBE_CLIENT_VERSION":"([0-9.]+)"/)?.[1] ??
     html.match(/"clientVersion":"([0-9.]+)"/)?.[1];
-  const initial = extractAssignedJson(html, [
-    "ytInitialData = ",
-    "ytInitialData=",
-    'window["ytInitialData"] = ',
-    "window['ytInitialData'] = ",
-  ]);
-  const continuation = initial ? findContinuation(initial) : null;
+  const initial = extractAssignedJson(html, INITIAL_DATA_MARKERS);
+  const continuation = initial ? findContinuation(initial, false) : null;
 
   if (!apiKey || !clientVersion || !continuation) {
     throw new ChatError(
-      "Esse vídeo não devolveu um chat. Ele precisa estar ao vivo, com o chat aberto.",
+      "Esse vídeo não devolveu um chat. Use uma live no ar ou uma live encerrada com replay de chat ligado.",
       "no-chat",
     );
   }
+
+  if (continuation.mode === "replay") continuation.timeoutMs = 500;
 
   return {
     apiKey,
@@ -145,15 +149,108 @@ export function extractSetup(html: string): {
   };
 }
 
+export function readConversationBar(payload: unknown): {
+  token: string | null;
+  replay: boolean;
+  message: string | null;
+} {
+  const bar = asRecord(
+    asRecord(asRecord(asRecord(payload)?.contents)?.twoColumnWatchNextResults)
+      ?.conversationBar,
+  );
+  if (!bar) return { token: null, replay: false, message: null };
+
+  const renderer = asRecord(bar.liveChatRenderer);
+  if (renderer) {
+    const titles = submenuTitles(renderer);
+    const continuation = findContinuation(renderer, true);
+    return {
+      token: continuation?.token ?? null,
+      replay: titles.some(isReplayTitle),
+      message: null,
+    };
+  }
+
+  const text = textOf(
+    asRecord(asRecord(asRecord(bar.conversationBarRenderer)?.availabilityMessage)?.messageRenderer)
+      ?.text,
+  ).trim();
+  return { token: null, replay: false, message: text || null };
+}
+
+function submenuTitles(renderer: Record<string, unknown>): string[] {
+  const items = asRecord(
+    asRecord(asRecord(asRecord(renderer.header)?.liveChatHeaderRenderer)?.viewSelector)
+      ?.sortFilterSubMenuRenderer,
+  )?.subMenuItems;
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((item) => {
+      const record = asRecord(item);
+      return record ? textOf(record.title) || (typeof record.title === "string" ? record.title : "") : "";
+    })
+    .filter(Boolean);
+}
+
+function liveReplayToken(html: string): string | null {
+  const initial = extractAssignedJson(html, INITIAL_DATA_MARKERS);
+  if (!initial) return null;
+  const found: Array<{ title: string; token: string }> = [];
+  const stack: unknown[] = [initial];
+  let steps = 0;
+  while (stack.length > 0 && steps < 80_000) {
+    const node = stack.pop();
+    steps += 1;
+    const record = asRecord(node);
+    if (!record) {
+      if (Array.isArray(node)) for (const child of node) stack.push(child);
+      continue;
+    }
+    if (Array.isArray(record.subMenuItems)) {
+      for (const item of record.subMenuItems) {
+        const entry = asRecord(item);
+        if (!entry) continue;
+        const title = textOf(entry.title) || (typeof entry.title === "string" ? entry.title : "");
+        const token = asRecord(asRecord(entry.continuation)?.reloadContinuationData)?.continuation;
+        if (title && typeof token === "string" && token.length > 40) {
+          found.push({ title, token });
+        }
+      }
+    }
+    for (const value of Object.values(record)) {
+      if (value && typeof value === "object") stack.push(value);
+    }
+  }
+  const live = found.find((item) => /live chat replay|replay do chat ao vivo/i.test(item.title));
+  return live?.token ?? found[0]?.token ?? null;
+}
+
+function isReplayTitle(title: string): boolean {
+  return /replay/i.test(title);
+}
+
+function translateChatMessage(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes("turned off") || lower.includes("desativad") || lower.includes("desligad")) {
+    return "O replay do chat foi desligado neste vídeo.";
+  }
+  if (lower.includes("disabled") || lower.includes("is off") || lower.includes("não está disponível")) {
+    return "O chat está desligado neste vídeo.";
+  }
+  return message;
+}
+
 export function parsePollBody(payload: unknown): PollBatch {
   const root = asRecord(payload);
   const liveChat = asRecord(asRecord(root?.continuationContents)?.liveChatContinuation);
   const messages = parseActions(liveChat?.actions);
-  const next = liveChat ? findContinuation(liveChat) : null;
+  const next = liveChat ? findContinuation(liveChat, false) : null;
+  const timeoutMs =
+    next?.mode === "replay" ? 500 : clampTimeout(next?.timeoutMs ?? 5000);
   return {
     messages,
     continuation: next?.token ?? null,
-    timeoutMs: clampTimeout(next?.timeoutMs ?? 5000),
+    timeoutMs,
     ended: !next,
   };
 }
@@ -172,15 +269,100 @@ export async function openChat(input: string): Promise<OpenedChat> {
     fetchText(`https://www.youtube.com/live_chat?is_popout=1&v=${videoId}`),
   ]);
 
-  let setup: ReturnType<typeof extractSetup>;
   try {
-    setup = extractSetup(popout);
+    const live = extractSetup(popout);
+    if (live.continuation.mode === "live") return opened(videoId, meta, live);
   } catch (error) {
     if (!(error instanceof ChatError)) throw error;
-    const watch = await fetchText(`https://www.youtube.com/watch?v=${videoId}`);
-    setup = extractSetup(watch);
   }
 
+  const watch = await fetchText(`https://www.youtube.com/watch?v=${videoId}`);
+  try {
+    return opened(videoId, meta, extractSetup(watch));
+  } catch (error) {
+    if (!(error instanceof ChatError)) throw error;
+  }
+
+  const apiKey =
+    popout.match(/"INNERTUBE_API_KEY":"([A-Za-z0-9_-]+)"/)?.[1] ??
+    watch.match(/"INNERTUBE_API_KEY":"([A-Za-z0-9_-]+)"/)?.[1];
+  const clientVersion =
+    popout.match(/"INNERTUBE_CLIENT_VERSION":"([0-9.]+)"/)?.[1] ??
+    watch.match(/"INNERTUBE_CLIENT_VERSION":"([0-9.]+)"/)?.[1] ??
+    popout.match(/"clientVersion":"([0-9.]+)"/)?.[1] ??
+    watch.match(/"clientVersion":"([0-9.]+)"/)?.[1];
+  if (!apiKey || !clientVersion) {
+    throw new ChatError(
+      "Esse vídeo não devolveu um chat. Use uma live no ar ou uma live encerrada com replay de chat ligado.",
+      "no-chat",
+    );
+  }
+
+  const next = await fetchInnertube("next", apiKey, clientVersion, { videoId });
+  const conversation = readConversationBar(next);
+  if (conversation.message) {
+    throw new ChatError(translateChatMessage(conversation.message), "no-chat");
+  }
+  if (!conversation.token) {
+    throw new ChatError(
+      "Esse vídeo não devolveu um chat. Use uma live no ar ou uma live encerrada com replay de chat ligado.",
+      "no-chat",
+    );
+  }
+
+  const replay = conversation.replay;
+  const token = conversation.token;
+  let page: string | null = null;
+  const urls = replay
+    ? [
+        `https://www.youtube.com/live_chat_replay?continuation=${encodeURIComponent(token)}`,
+      ]
+    : [
+        `https://www.youtube.com/live_chat?continuation=${encodeURIComponent(token)}`,
+        `https://www.youtube.com/live_chat_replay?continuation=${encodeURIComponent(token)}`,
+      ];
+  for (const url of urls) {
+    try {
+      page = await fetchText(url);
+      extractSetup(page);
+      break;
+    } catch (error) {
+      if (!(error instanceof ChatError)) throw error;
+      page = null;
+    }
+  }
+  if (!page) {
+    throw new ChatError(
+      "Esse vídeo não devolveu um chat. Use uma live no ar ou uma live encerrada com replay de chat ligado.",
+      "no-chat",
+    );
+  }
+  if (
+    replay ||
+    findContinuation(extractAssignedJson(page, INITIAL_DATA_MARKERS) ?? {}, false)?.mode ===
+      "replay"
+  ) {
+    const liveToken = liveReplayToken(page);
+    if (liveToken && liveToken !== token) {
+      try {
+        const livePage = await fetchText(
+          `https://www.youtube.com/live_chat_replay?continuation=${encodeURIComponent(liveToken)}`,
+        );
+        extractSetup(livePage);
+        page = livePage;
+      } catch {
+        // keep the first replay page (often Top chat)
+      }
+    }
+  }
+  return opened(videoId, meta, extractSetup(page));
+}
+
+function opened(
+  videoId: string,
+  meta: { title: string; channel: string },
+  setup: ReturnType<typeof extractSetup>,
+): OpenedChat {
   return {
     videoId,
     title: meta.title,
@@ -189,7 +371,10 @@ export async function openChat(input: string): Promise<OpenedChat> {
     apiKey: setup.apiKey,
     clientVersion: setup.clientVersion,
     continuation: setup.continuation.token,
-    timeoutMs: clampTimeout(setup.continuation.timeoutMs),
+    timeoutMs:
+      setup.continuation.mode === "replay"
+        ? 500
+        : clampTimeout(setup.continuation.timeoutMs),
     messages: setup.messages,
   };
 }
@@ -223,6 +408,9 @@ export async function pollChat(input: {
         },
       },
       continuation: input.continuation,
+      ...(input.mode === "replay"
+        ? { currentPlayerState: { playerOffsetMs: "0" } }
+        : {}),
     }),
   });
 
@@ -278,9 +466,13 @@ function parseActions(actions: unknown): ChatMessage[] {
   if (!Array.isArray(actions)) return [];
   const messages: ChatMessage[] = [];
   for (const action of actions) {
-    const item = asRecord(asRecord(action)?.addChatItemAction)?.item;
-    const parsed = item ? parseItem(asRecord(item)) : null;
-    if (parsed) messages.push(parsed);
+    const replay = asRecord(asRecord(action)?.replayChatItemAction)?.actions;
+    const nested = Array.isArray(replay) ? replay : [action];
+    for (const inner of nested) {
+      const item = asRecord(asRecord(inner)?.addChatItemAction)?.item;
+      const parsed = item ? parseItem(asRecord(item)) : null;
+      if (parsed) messages.push(parsed);
+    }
   }
   return messages;
 }
@@ -414,18 +606,23 @@ function colorOf(value: unknown): string | undefined {
   return undefined;
 }
 
-function findContinuation(root: unknown): Continuation | null {
+function findContinuation(root: unknown, allowReload: boolean): Continuation | null {
+  let livePoll: Continuation | null = null;
   let replay: Continuation | null = null;
+  let reload: Continuation | null = null;
   const stack: unknown[] = [root];
   let steps = 0;
   while (stack.length > 0 && steps < 250_000) {
     const node = stack.pop();
     steps += 1;
     if (!node || typeof node !== "object") continue;
-    const direct = readContinuation(node);
-    if (direct) {
-      if (direct.mode === "live") return direct;
-      replay ??= direct;
+    const record = asRecord(node);
+    if (record) {
+      const invalidation = continuationFrom(record, "invalidationContinuationData", "live");
+      const timed = continuationFrom(record, "timedContinuationData", "live");
+      livePoll ??= invalidation ?? timed;
+      replay ??= continuationFrom(record, "liveChatReplayContinuationData", "replay");
+      reload ??= continuationFrom(record, "reloadContinuationData", "live", 40);
     }
     if (Array.isArray(node)) {
       for (const child of node) stack.push(child);
@@ -435,27 +632,25 @@ function findContinuation(root: unknown): Continuation | null {
       if (value && typeof value === "object") stack.push(value);
     }
   }
-  return replay;
+  return livePoll ?? replay ?? (allowReload ? reload : null);
 }
 
-function readContinuation(node: unknown): Continuation | null {
-  const record = asRecord(node);
-  if (!record) return null;
-  const options: Array<[string, ChatMode]> = [
-    ["invalidationContinuationData", "live"],
-    ["timedContinuationData", "live"],
-    ["reloadContinuationData", "live"],
-    ["liveChatReplayContinuationData", "replay"],
-  ];
-  for (const [key, mode] of options) {
-    const data = asRecord(record[key]);
-    if (!data || typeof data.continuation !== "string" || !data.continuation) {
-      continue;
-    }
-    const timeoutMs = typeof data.timeoutMs === "number" ? data.timeoutMs : 5000;
-    return { token: data.continuation, timeoutMs, mode };
+function continuationFrom(
+  record: Record<string, unknown>,
+  key: string,
+  mode: ChatMode,
+  minLength = 10,
+): Continuation | null {
+  const data = asRecord(record[key]);
+  if (
+    !data ||
+    typeof data.continuation !== "string" ||
+    data.continuation.length < minLength
+  ) {
+    return null;
   }
-  return null;
+  const timeoutMs = typeof data.timeoutMs === "number" ? data.timeoutMs : 5000;
+  return { token: data.continuation, timeoutMs, mode };
 }
 
 function extractAssignedJson(html: string, markers: string[]): unknown | null {
@@ -504,6 +699,49 @@ function sliceJsonObject(source: string, start: number): string | null {
     }
   }
   return null;
+}
+
+async function fetchInnertube(
+  endpoint: "next",
+  apiKey: string,
+  clientVersion: string,
+  extra: Record<string, unknown>,
+): Promise<unknown> {
+  const url = `https://www.youtube.com/youtubei/v1/${endpoint}?key=${encodeURIComponent(apiKey)}`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      signal: AbortSignal.timeout(12_000),
+      headers: {
+        ...YOUTUBE_HEADERS,
+        "Content-Type": "application/json",
+        "X-Youtube-Client-Name": "1",
+        "X-Youtube-Client-Version": clientVersion,
+      },
+      body: JSON.stringify({
+        context: {
+          client: {
+            hl: "pt",
+            gl: "BR",
+            clientName: "WEB",
+            clientVersion,
+          },
+        },
+        ...extra,
+      }),
+    });
+    if (!response.ok) {
+      throw new ChatError(
+        `O YouTube não abriu os dados do vídeo (${response.status}).`,
+        "upstream",
+      );
+    }
+    return await response.json();
+  } catch (error) {
+    if (error instanceof ChatError) throw error;
+    throw new ChatError("Não consegui falar com o YouTube agora.", "upstream");
+  }
 }
 
 async function fetchOEmbed(videoId: string): Promise<{ title: string; channel: string }> {

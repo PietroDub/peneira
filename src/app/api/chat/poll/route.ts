@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "O pedido não veio em JSON." }, { status: 400 });
   }
 
-  if (!allowRequest(clientKey(request, "poll"), 120, 60_000)) {
+  if (!allowRequest(clientKey(request, "poll"), 180, 60_000)) {
     return Response.json(
       { error: "Muitas leituras seguidas. A peneira espera o intervalo do chat." },
       { status: 429 },

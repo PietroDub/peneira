@@ -25,7 +25,7 @@ const KIND_OPTIONS: Array<{ id: ChatKind; label: string }> = [
 ];
 
 const STORAGE_KEY = "peneira-filtro";
-const BUFFER_LIMIT = 800;
+const BUFFER_LIMIT = 2500;
 
 type Phase = "idle" | "opening" | "live" | "replay" | "ended" | "error";
 
@@ -234,8 +234,9 @@ export function ChatDesk() {
           <Badge variant="outline">{status}</Badge>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Lê o chat público de uma live do YouTube e separa as mensagens que
-          batem no que você marcou: palavra, autor ou Super Chat.
+          Lê o chat público de uma live do YouTube — no ar ou encerrada, se
+          houver replay — e separa as mensagens que batem no que você marcou:
+          palavra, autor ou Super Chat.
         </p>
       </header>
 
@@ -450,13 +451,17 @@ function EmptyState({
   narrowed: boolean;
   onlyMatches: boolean;
 }) {
-  let text = "Cole o link de uma live com chat aberto.";
-  if (phase === "opening") text = "Abrindo o mesmo chat que o navegador vê.";
-  else if (phase === "live" || phase === "replay") {
+  let text = "Cole o link de uma live no ar ou de uma live encerrada com replay de chat.";
+  if (phase === "opening") text = "Abrindo o chat ao vivo ou o replay gravado.";
+  else if (phase === "live") {
     text = narrowed && onlyMatches
       ? "Nada bateu ainda. A lista enche quando chegar uma mensagem do filtro."
       : "O chat está aberto. As mensagens aparecem aqui conforme chegam.";
-  } else if (phase === "ended") text = "O chat encerrou. O que já passou continua na lista se você não limpou.";
+  } else if (phase === "replay") {
+    text = narrowed && onlyMatches
+      ? "Nada bateu ainda neste trecho do replay."
+      : "Lendo o replay do chat. As mensagens antigas entram em sequência.";
+  } else if (phase === "ended") text = "O chat (ou o replay) acabou. O que já passou continua na lista se você não limpou.";
   else if (phase === "error") text = "A leitura parou. Confira o aviso acima e abra de novo.";
   return <p className="px-3 py-8 text-sm text-muted-foreground">{text}</p>;
 }

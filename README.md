@@ -1,8 +1,8 @@
 # Peneira
 
-A Peneira lê o chat público de uma live do YouTube e fica só com as mensagens que você marcou.
+A Peneira lê o chat público de uma live do YouTube — no ar ou já encerrada, se o replay do chat estiver ligado — e fica só com as mensagens que você marcou.
 
-Ela não entra na sua conta, não envia mensagem e não modera. O servidor pede a mesma página de chat que o navegador abre e acompanha as mensagens novas.
+Ela não entra na sua conta, não envia mensagem e não modera. O servidor pede a mesma página de chat que o navegador abre e acompanha as mensagens novas ou o replay gravado.
 
 ## Abrir no Cursor
 
@@ -36,7 +36,7 @@ A lista da direita mostra o que bateu. Copiar junta essas linhas. Baixar JSON gu
 
 O filtro fica salvo neste navegador.
 
-A live precisa estar no ar, com o chat aberto. Se o chat acabou, a leitura para e o que já chegou continua na lista até você limpar.
+Live no ar: o chat entra conforme chega. Live encerrada: ela lê o replay, se o canal deixou o replay ligado. Se o YouTube desligou o chat, a abertura avisa.
 
 ```bash
 npm test
