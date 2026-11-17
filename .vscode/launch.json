@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Peneira: abrir no navegador",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:3847",
+      "webRoot": "${workspaceFolder}",
+      "preLaunchTask": "Servidor de desenvolvimento"
+    }
+  ]
+}
