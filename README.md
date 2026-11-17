@@ -6,19 +6,43 @@ Ela não entra na sua conta, não envia mensagem e não modera. O servidor pede 
 
 ## Abrir no Cursor
 
-1. No Cursor, **File → Clone Repository** (ou Clone Repo na tela inicial).
-2. Cole o repositório privado `pietro-vito/peneira` (Origin).
-3. Abra a pasta clonada como o workspace.
-4. No terminal integrado:
+O código está no Origin da Cursor, não no GitHub. O **File → Clone Repository** do Cursor procura o GitHub e não acha este repo.
+
+No terminal da sua máquina:
 
 ```bash
+curl -fsSL https://downloads.cursor.com/origin/install.sh | sh
+origin auth login
+git clone https://origin.cursor.com/pietro-vito/peneira.git
+cd peneira
 npm install
+```
+
+No Windows (PowerShell):
+
+```powershell
+irm https://downloads.cursor.com/origin/install.ps1 | iex
+origin auth login
+git clone https://origin.cursor.com/pietro-vito/peneira.git
+cd peneira
+npm install
+```
+
+Depois, no Cursor: **File → Open Folder** e escolha a pasta `peneira`.
+
+```bash
 npm run dev
 ```
 
-5. Abra [http://localhost:3847](http://localhost:3847).
+Abra [http://localhost:3847](http://localhost:3847).
 
 O Cursor também pode subir o servidor com **Terminal → Run Task… → Servidor de desenvolvimento**.
+
+A URL HTTPS para copiar no botão **Code** de [pietro-vito/peneira](https://cursor.com/codebase/pietro-vito/peneira) é:
+
+```text
+https://origin.cursor.com/pietro-vito/peneira.git
+```
 
 ## Como usar
 
